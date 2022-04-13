@@ -77,7 +77,6 @@ class DummyAgent(CaptureAgent):
     Your initialization code goes here, if you need any.
     '''
 
-
   def chooseAction(self, gameState):
     """
     Picks among actions randomly.
@@ -89,4 +88,42 @@ class DummyAgent(CaptureAgent):
     '''
 
     return random.choice(actions)
+
+
+class PacAttack(CaptureAgent):
+  def assignAgents(self, gameState):
+    """
+    will look at game state and assign agents to be offensive or defensive
+
+    possibly send some sort of value to determine how offensive (this should 
+    be over-rideable when specific scenarios occur, like them losing an agent,
+    when an agent might otherwise be trapped, etc.)
+    """
+
+
+  def offensiveAgent(self, gameState, val):
+    if atRiskOfDeath(gameState):
+      #avoid dying bro
+    else:
+      if shouldHeadBack(gameState, val):
+        #return home
+      else:
+        if closeToRewards(gameState, val):
+          #monte-carlo
+        else: 
+          #A*
+
+  def defensiveAgent(self, gameState, val):
+    if theyHavePowerPellet(gameState):
+      #don't die
+    else:
+      if crossingRisk(gameState, val):
+        #move to better defensive position
+      else:
+        #play defense fucker
+
+  def attackTheirPac(self, gameState, val):
+    #third agent type specificly designed for when we want to ignore food and only focus on capturing them
+    #useful if they're already down one pac, or depending on game state
+
 
