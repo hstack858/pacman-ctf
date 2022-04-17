@@ -4,7 +4,7 @@
 # educational purposes provided that (1) you do not distribute or publish
 # solutions, (2) you retain this notice, and (3) you provide clear
 # attribution to UC Berkeley, including a link to http://ai.berkeley.edu.
-#
+# 
 # Attribution Information: The Pacman AI projects were developed at UC Berkeley.
 # The core projects and autograders were primarily created by John DeNero
 # (denero@cs.berkeley.edu) and Dan Klein (klein@cs.berkeley.edu).
@@ -25,8 +25,8 @@ import numpy as np
 #################
 
 def createTeam(firstIndex, secondIndex, isRed,
-               first='DummyAgent', second='DummyAgent'):
-    """
+               first = 'DummyAgent', second = 'DummyAgent'):
+  """
   This function should return a list of two agents that will form the
   team, initialized using firstIndex and secondIndex as their agent
   index numbers.  isRed is True if the red team is being created, and
@@ -41,23 +41,22 @@ def createTeam(firstIndex, secondIndex, isRed,
   behavior is what you want for the nightly contest.
   """
 
-    # The following line is an example only; feel free to change it.
-    return [eval(first)(firstIndex), eval(second)(secondIndex)]
-
+  # The following line is an example only; feel free to change it.
+  return [eval(first)(firstIndex), eval(second)(secondIndex)]
 
 ##########
 # Agents #
 ##########
 
 class DummyAgent(CaptureAgent):
-    """
+  """
   A Dummy agent to serve as an example of the necessary agent structure.
   You should look at baselineTeam.py for more details about how to
   create an agent as this is the bare minimum.
   """
 
-    def registerInitialState(self, gameState):
-        """
+  def registerInitialState(self, gameState):
+    """
     This method handles the initial setup of the
     agent to populate useful fields (such as what team
     we're on).
@@ -81,8 +80,8 @@ class DummyAgent(CaptureAgent):
     Your initialization code goes here, if you need any.
     '''
 
-    def chooseAction(self, gameState):
-        """
+  def chooseAction(self, gameState):
+    """
     Picks among actions randomly.
     """
         actions = gameState.getLegalActions(self.index)
@@ -92,6 +91,44 @@ class DummyAgent(CaptureAgent):
     '''
 
         return random.choice(actions)
+
+
+class PacAttack(CaptureAgent):
+  def assignAgents(self, gameState):
+    """
+    will look at game state and assign agents to be offensive or defensive
+
+    possibly send some sort of value to determine how offensive (this should
+    be over-rideable when specific scenarios occur, like them losing an agent,
+    when an agent might otherwise be trapped, etc.)
+    """
+
+
+  def offensiveAgent(self, gameState, val):
+    if atRiskOfDeath(gameState):
+      #avoid dying bro
+    else:
+      if shouldHeadBack(gameState, val):
+        #return home
+      else:
+        if closeToRewards(gameState, val):
+          #monte-carlo
+        else:
+          #A*
+
+  def defensiveAgent(self, gameState, val):
+    if theyHavePowerPellet(gameState):
+      #don't die
+    else:
+      if crossingRisk(gameState, val):
+        #move to better defensive position
+      else:
+        #play defense fucker
+
+  def attackTheirPac(self, gameState, val):
+    #third agent type specificly designed for when we want to ignore food and only focus on capturing them
+    #useful if they're already down one pac, or depending on game state
+
 
 
 
@@ -504,7 +541,7 @@ class OffensiveAgent(PacAttack):
                 print 'eval time for offensive agent %d: %.4f' % (
                     self.agent.index, time.time() - start)
 
-            
+
 
 
 class DefensiveAgent(PacAttack):
