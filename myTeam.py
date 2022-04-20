@@ -23,8 +23,8 @@ from sklearn import preprocessing
 #################
 
 def createTeam(firstIndex, secondIndex, isRed,
-               first = 'DummyAgent', second = 'DummyAgent'):
-  """
+               first='DummyAgent', second='DummyAgent'):
+    """
   This function should return a list of two agents that will form the
   team, initialized using firstIndex and secondIndex as their agent
   index numbers.  isRed is True if the red team is being created, and
@@ -39,22 +39,23 @@ def createTeam(firstIndex, secondIndex, isRed,
   behavior is what you want for the nightly contest.
   """
 
-  # The following line is an example only; feel free to change it.
-  return [eval(first)(firstIndex), eval(second)(secondIndex)]
+    # The following line is an example only; feel free to change it.
+    return [eval(first)(firstIndex), eval(second)(secondIndex)]
+
 
 ##########
 # Agents #
 ##########
 
 class DummyAgent(CaptureAgent):
-  """
+    """
   A Dummy agent to serve as an example of the necessary agent structure.
   You should look at baselineTeam.py for more details about how to
   create an agent as this is the bare minimum.
   """
 
-  def registerInitialState(self, gameState):
-    """
+    def registerInitialState(self, gameState):
+        """
     This method handles the initial setup of the
     agent to populate useful fields (such as what team
     we're on).
@@ -66,27 +67,24 @@ class DummyAgent(CaptureAgent):
     IMPORTANT: This method may run for at most 15 seconds.
     """
 
-    '''
+        '''
     Make sure you do not delete the following line. If you would like to
     use Manhattan distances instead of maze distances in order to save
     on initialization time, please take a look at
     CaptureAgent.registerInitialState in captureAgents.py.
     '''
-    CaptureAgent.registerInitialState(self, gameState)
+        CaptureAgent.registerInitialState(self, gameState)
 
-    '''
+        '''
     Your initialization code goes here, if you need any.
     '''
 
-  def chooseAction(self, gameState):
-    """
+    def chooseAction(self, gameState):
+        """
     Picks among actions randomly.
     """
-    actions = gameState.getLegalActions(self.index)
-    return random.choice(actions)
-
-
-
+        actions = gameState.getLegalActions(self.index)
+        return random.choice(actions)
 
 
 class PacAttack(CaptureAgent):
@@ -110,29 +108,24 @@ class PacAttack(CaptureAgent):
 
 # AKA Aaron Pac-dgers
 class OffensiveAgent(PacAttack):
-    # Dimmensions (32, 16)
-
     def __init__(self):
-      self.presentFoodList = []
-      self.isRetreating = False
-      self.initialTarget = []
-      self.riskyPositions = None
-      self.width = None
-      self.height = None
-      self.initial_position = None
-      self.risky_food = None
-      self.boundary = None
-      self.isRed = None
-      self.epsilon = 0.1
-      # Learning Rate
-      self.alpha = 0.2
-      # For monte carlo
-      self.depth = 5
-      self.decay = 0.9
-
+        self.riskyPositions = None
+        self.width = None
+        self.height = None
+        self.initial_position = None
+        self.risky_food = None
+        self.boundary = None
+        self.isRed = None
+        self.weights = None
+        # Chance to explore
+        self.epsilon = 0.1
+        # Learning Rate
+        self.alpha = 0.2
+        # For monte carlo
+        self.depth = 5
+        self.decay = 0.9
 
     def registerInitialState(self, gameState):
-        self.findRiskyAttackingFood(gameState)
         self.width = gameState.data.layout.width
         self.height = gameState.data.layout.height
         self.initial_position = self.getAgentState(self.index).getPosition()
@@ -148,8 +141,15 @@ class OffensiveAgent(PacAttack):
             if not gameState.hasWall(boundary_coordinate, y_coord):
                 self.boundary.append((boundary_coordinate, y_coord))
         self.risky_food = self.findRiskyAttackingFood(gameState)
-
-
+        self.weights = {
+            'score': 0,
+            'closestFood': 0,
+            'closestCapsule': 0,
+            'closestBoundary': 0,
+            'closestGhost': 0,
+            'teammateDistance': 0,
+            'closestRiskyFood': 0
+        }
 
     # Q-Learning Functions ----------------------------------------------------------------------
 
@@ -179,24 +179,18 @@ class OffensiveAgent(PacAttack):
         start = time.time()
         probability = util.flipCoin(self.epsilon)
         if probability:
-            action =  self.monteCarloSimulation(gameState, self.depth, self.decay)
+            if self.closeToRewards(gameState):
+                # Highest reward from monte carlo
+                action = self.monteCarloSimulation(gameState, self.depth, self.decay)
+            else:
+                # A* to find closest pellet
+                action = self.aStarClosestPellet(gameState)
         else:
-            action =  self.getPolicy(gameState)
+            action = self.getPolicy(gameState)
         if (time.time() - start) > 1.5:
             print 'eval time for offensive agent %d: %.4f' % (
                 self.agent.index, time.time() - start)
         return action
-
-        # if self.atRiskOfDeath(gameState):
-        # # avoid dying bro
-        # else:
-        #     if self.shouldHeadBack(gameState):
-        #     # return home
-        #         self.isRetreating = True
-        #     else:
-        #         if self.closeToRewards(gameState):
-        #             # monte-carlo
-        #             return self.monteCarloSimulation(gameState, 4, 0.7)
 
     def getFeatures(self, gameState, action):
         features = util.Counter()
@@ -272,6 +266,7 @@ class OffensiveAgent(PacAttack):
         # Distance to the closest risky food
         closest_risky_food = sys.maxint
         closest_risky_food_risk = 0
+        self.risky_food = self.updateRiskyFoodGrid(gameState)
         for position_risk_score in self.risky_food:
             distance = self.getMazeDistance(current_position, position_risk_score[0])
             if distance < closest_risky_food:
@@ -294,127 +289,20 @@ class OffensiveAgent(PacAttack):
         features = self.getFeatures(gameState, action)
         nextState = self.getSuccesspr(gameState, action)
 
+        # Reward function needs work
+        # Reward for surviving
         reward = nextState.getScore() - gameState.getScore()
         for feature in features:
             weight_correction = reward + self.decay * self.getValue(nextState) - self.evaluate(gameState, action)
             self.weights[feature] = self.weights[feature] + self.alpha * weight_correction * features[feature]
 
+    # Helper Functions -------------------------------------------------------------------------
 
-
-    # # We should use q-learning to determine the most effective values for these
-    # # Values we want to be higher should be positive and values we want to be lower should be negative
-    # def getWeights(self, gameState, action):
-    #     successor = self.getSuccessor(gameState, action)
-    #
-    #     # When chased by an opponent ghost, risky food, distance to opponent,
-    #     # distance to capsule, and distance to boundary are weighted more heavily
-    #     score_weight = 100
-    #     if self.isRed:
-    #         score_weight = 1
-    #     else:
-    #         score_weight = -1
-    #
-    #     closest_food_weight = -10
-    #
-    #     closest_risky_food_weight = 5
-    #
-    #     # Depends on how close the closest ghost is
-    #     closest_capsule_weight = -2
-    #     # If there are no more capsules then this doesn't matter
-    #     capsule_list = self.getCapsules(successor)
-    #     if len(capsule_list) == 0:
-    #         closest_capsule_weight = 0
-    #
-    #     closest_boundary_weight = -1
-    #     # Depends on how many pellets we are carrying, how close ghosts are, and isRetreating
-    #     num_carrying = successor.getAgentState(self.index).numCarrying
-    #     closest_boundary_weight *= (0.1 * num_carrying)
-    #     if self.isRetreating:
-    #         closest_boundary_weight * 10
-    #
-    #     closest_ghost_weight = 5
-    #     # If close ghosts are scared, the agent shouldn't care about their distances
-    #     opponents = [successor.getAgentState(i) for i in self.agent.getOpponents(successor)]
-    #     visible_ghosts = []
-    #     for opponent in opponents:
-    #         if opponent.getPosition() is not None:
-    #             visible_ghosts.append(opponent)
-    #     if len(visible_ghosts) > 0:
-    #         for ghost in visible_ghosts:
-    #             if ghost.scaredTimer > 0:
-    #                 # The ghost is scared
-    #                 if ghost.scaredTimer > 12:
-    #                     closest_ghost_weight = -2
-    #                     closest_risky_food_weight = -5
-    #                     score_weight += num_carrying * 5
-    #
-    #                 elif ghost.scaredTimer > 6:
-    #                     closest_ghost_weight = -1
-    #                     score_weight += num_carrying * 3
-    #                 else:
-    #                     closest_ghost_weight = 10
-    #             else:
-    #                 # Visible and NOT scared
-    #                 closest_ghost_weight = 20
-    #                 closest_risky_food_weight = 10
-    #                 closest_capsule_weight = -3
-    #     else:
-    #         # We don't see any ghosts close by
-    #         # TODO: Incorporate risk factor somehow
-    #         closest_ghost_weight = 0
-    #         closest_capsule_weight = 0
-    #         closest_boundary_weight = 0
-    #         closest_risky_food_weight = -5
-    #
-    #     closest_teammate_distance_weight = 3
-    #
-    #     weights = {
-    #         'score': score_weight,
-    #         'closestFood': closest_food_weight,
-    #         'closestCapsule': closest_capsule_weight,
-    #         'closestBoundary': closest_boundary_weight,
-    #         'closestGhost': closest_ghost_weight,
-    #         'teammateDistance': closest_teammate_distance_weight,
-    #         'closestRiskyFood': closest_risky_food_weight
-    #     }
-    #     self.weights = weights
+    def isBlue(self):
+        return not self.isRed()
 
     def opponentPositions(self, gameState):
-      return [gameState.getAgentPosition(enemy) for enemy in self.getOpponents(gameState)]
-
-    def atRiskOfDeath(self, gameState):
-      # Returns a location tuple if the agent unless unobservable, then None
-      enemy_positions = self.opponentPositions(gameState)
-      current_position = self.getAgentState(self.index).getPosition()
-      for posn in enemy_positions:
-        if posn is not None:
-          distance = self.getMazeDistance(posn, current_position)
-          if distance < 3:
-              return True
-          for position_riskScore in self.riskyPositions:
-              if current_position == position_riskScore[0]:
-                  # Test to see if we can make it out
-                  return abs(distance - position_riskScore[1] >= distance)
-
-    def shouldHeadBack(self, gameState):
-        num_carrying = gameState.getAgentState(self.index).numCarrying
-        val = 0
-        if self.isRed:
-            if gameState.score > 20:
-                val += .4
-        else:
-            if gameState.score < -20:
-                val += .4
-        if num_carrying > 5:
-            val += .1
-            if num_carrying > 10:
-                val += .1
-                if num_carrying > 15:
-                    val += .1
-                    if num_carrying > 15:
-                        val += .1
-        return val > .5
-
+        return [gameState.getAgentPosition(enemy) for enemy in self.getOpponents(gameState)]
 
     def getLegalActionsFromPosition(self, position, gameState):
         walls = gameState.getWalls()
@@ -460,7 +348,6 @@ class OffensiveAgent(PacAttack):
                 new_posn = (position[0], position[1] - 1)
             return 1 + self.calculateRiskScore(gameState, new_posn, legal_actions[0])
 
-
     def findRiskyPositions(self, gameState):
         """
         Returns a list of tuples (position, riskScore) where position is the
@@ -492,24 +379,44 @@ class OffensiveAgent(PacAttack):
                 else:
                     legal_actions = self.getLegalActionsFromPosition(new_posn, gameState)
                     risky_positions.append((new_posn, risk_score))
-        self.riskyPositions = risky_positions
+        return risky_positions
 
     def findRiskyAttackingFood(self, gameState):
+        """
+        Returns a list of positions with risky food
+        """
         risky_food = []
         risky_positions = self.findRiskyPositions(gameState)
-        for position in risky_positions:
+        for position_risk_score in risky_positions:
             if self.isBlue():
                 red_food = gameState.getRedFood()
-                if red_food[position]:
-                    risky_food.append(position)
+                if red_food[position_risk_score[0]]:
+                    risky_food.append(position_risk_score)
             else:
-                position[0] -= gameState.data.layout.width
+                position_risk_score[0] -= gameState.data.layout.width
                 blue_food = gameState.getBlueFood()
-                if blue_food[position]:
-                    risky_food.append(position)
+                if blue_food[position_risk_score[0]]:
+                    risky_food.append(position_risk_score)
         return risky_food
 
+    def updateRiskyFoodGrid(self, gameState):
+        new_risky_food = []
+        for position_risk_score in self.risky_food:
+            if self.isBlue():
+                red_food = gameState.getRedFood()
+                if red_food[position_risk_score[0]]:
+                    new_risky_food.append(position_risk_score)
+            else:
+                position_risk_score[0] -= gameState.data.layout.width
+                blue_food = gameState.getBlueFood()
+                if blue_food[position_risk_score[0]]:
+                    new_risky_food.append(position_risk_score)
+        return new_risky_food
+
     def closePositions(self, gameState, position, stepsToExplore, visitedPositions):
+        """
+        Returns a set of positions that can be reached within stepsToExplore steps
+        """
         if stepsToExplore == 0:
             return
         legal_actions = self.getLegalActionsFromPosition(position, gameState)
@@ -525,22 +432,26 @@ class OffensiveAgent(PacAttack):
                 new_position = (position[0], position[1] - 1)
             if new_position not in visitedPositions:
                 visitedPositions.add(new_position)
-                self.closePositions(gameState, new_position, stepsToExplore-1, visitedPositions)
+                self.closePositions(gameState, new_position, stepsToExplore - 1, visitedPositions)
         return visitedPositions
 
     def closeToRewards(self, gameState):
+        """
+        Determines whether there are 2 or more rewards within 5 units of Pacman
+        """
         current_position = self.getPosition()
-        # Count how many pellets are within 4 units from pacman
         pellet_count = 0
-        possible_positions = self.closePositions(gameState, current_position, 4, set())
+        possible_positions = self.closePositions(gameState, current_position, 5, set())
         food = gameState.getFood()
         for position in possible_positions:
             if food[position[0]][position[1]]:
                 pellet_count += 1
         return pellet_count >= 2
 
-
     def montePossibleActions(self, state):
+        """
+        Returns the list of possible actions the Monte Carlo Simulation could take
+        """
         legal_actions = state.getLegalActions(self.index)
         legal_actions.remove(Directions.STOP)
         if len(legal_actions == 1):
@@ -552,6 +463,9 @@ class OffensiveAgent(PacAttack):
             return legal_actions
 
     def monteCarloSimulation(self, gameState, depth, decay):
+        """
+        Performs a Monte Carlo simulation on the given depth and returns the score maximizing aciton
+        """
         copy = gameState.deepCopy()
         if depth == 0:
             new_actions = self.montePossibleActions(copy)
@@ -564,11 +478,47 @@ class OffensiveAgent(PacAttack):
         new_actions = self.montePossibleActions(copy)
         for action in new_actions:
             new_state = copy.generateSuccessor(self.index, action)
-            score = self.evaluate(new_state, Directions.STOP) + decay * self.monteCarloSimulation(new_state, depth - 1, decay)
+            score = self.evaluate(new_state, Directions.STOP) + decay * self.monteCarloSimulation(new_state, depth - 1,
+                                                                                                  decay)
             results.append(score)
             actions[score] = action
         return actions[max(results)]
 
+    def aStarClosestPellet(self, gameState):
+        from util import PriorityQueue
+        priority_queue = PriorityQueue()
+        priority_queue.push((self.getPosition(), []))
+        visited = set()
+
+        while not priority_queue.isEmpty():
+            coords, path = priority_queue.pop()
+            if coords in visited:
+                continue
+            visited.add(coords)
+            if self.isRed():
+                if gameState.getBlueFood()[coords[0]][coords[1]]:
+                    return path[0]
+            elif gameState.redFood()[coords[0]][coords[1]]:
+                return path[0]
+            for action in self.getLegalActionsFromPosition(coords):
+                if action == "Left":
+                    new_posn = (coords[0] - 1, coords[1])
+                    longer_path = path + "Left"
+                    priority_queue.push((new_posn, longer_path))
+                elif action == "Right":
+                    new_posn = (coords[0] - 1, coords[1])
+                    longer_path = path + "Right"
+                    priority_queue.push((new_posn, longer_path))
+
+                elif action == "Up":
+                    new_posn = (coords[0], coords[1] + 1)
+                    longer_path = path + "Up"
+                    priority_queue.push((new_posn, longer_path))
+
+                elif action == "Down":
+                    new_posn = (coords[0], coords[1] - 1)
+                    longer_path = path + "Down"
+                    priority_queue.push((new_posn, longer_path))
 
 #
 #
@@ -597,5 +547,3 @@ class OffensiveAgent(PacAttack):
 #     def chooseAction(self, gameState):
 # # third agent type specificly designed for when we want to ignore food and only focus on capturing them
 # # useful if they're already down one pac, or depending on game state
-
-
