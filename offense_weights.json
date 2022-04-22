@@ -1,0 +1,9 @@
+{
+    "closestFood": 0.0, 
+    "closestCapsule": 0.0, 
+    "score": 0.0, 
+    "teammateDistance": 0.0, 
+    "closestGhost": 0.0, 
+    "closestBoundary": 0.0, 
+    "closestRiskyFood": 0.0
+}
