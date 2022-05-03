@@ -13,7 +13,7 @@
 import sys
 
 from captureAgents import CaptureAgent
-import random, time, util
+import random, util
 import game
 from game import Directions
 from util import nearestPoint
@@ -23,12 +23,15 @@ import json
 # Team creation #
 #################
 arguments = {}
+training = False
 
 
 def createTeam(firstIndex, secondIndex, isRed,
                first='OffensiveAgent', second='DefensiveAgent', **args):
     if 'numTraining' in args:
         arguments['numTraining'] = args['numTraining']
+        global_vars = globals()
+        global_vars['training'] = True
     return [eval(first)(firstIndex), eval(second)(secondIndex)]
 
 
@@ -98,6 +101,7 @@ class PacAttack(CaptureAgent):
 class OffensiveAgent(CaptureAgent):
     def __init__(self, index):
         CaptureAgent.__init__(self, index)
+        self.start = None
         self.riskyPositions = None
         self.width = None
         self.height = None
@@ -109,14 +113,15 @@ class OffensiveAgent(CaptureAgent):
             weights = json.load(openfile)
         self.weights = weights
         # Chance to explore
-        self.epsilon = 0.1
+        self.epsilon = 0.05
         # Learning Rate
         self.alpha = 0.2
         # For monte carlo
         self.depth = 5
-        self.decay = 0.9
+        self.decay = 0.8
 
     def registerInitialState(self, gameState):
+        self.start = gameState.getAgentPosition(self.index)
         self.width = gameState.data.layout.width
         self.height = gameState.data.layout.height
         boundary_coordinate = None
@@ -136,167 +141,197 @@ class OffensiveAgent(CaptureAgent):
     # Q-Learning Functions ----------------------------------------------------------------------
 
     def getSuccessor(self, gameState, action):
-        new_action = action
-        if action is None:
-            new_action = game.Directions.STOP
-        successor = gameState.generateSuccessor(self.index, new_action)
+        successor = gameState.generateSuccessor(self.index, action)
         pos = successor.getAgentState(self.index).getPosition()
-        pos = (int(pos[0]), int(pos[1]))
         if pos != nearestPoint(pos):
             # Only half a grid position was covered
-            return successor.generateSuccessor(self.index, new_action)
+            return successor.generateSuccessor(self.index, action)
         else:
             return successor
 
-    def evaluate(self, gameState, action):
-        score = 0
+    def getActionQValue(self, gameState, action):
         features = self.getFeatures(gameState, action)
-        for idx, feature in enumerate(features.keys()):
-            score += features[feature] * self.weights[feature]
-        return score
+        # for feature in features:
+        #     print(feature + ": ", features[feature], " * ", self.weights[feature], "= " + str(features[feature] * self.weights[feature]))
+        value = features * self.weights
+        print("offense: ", value)
+        return value
 
-    def getValue(self, gameState):
-        values = []
+    def getQValue(self, gameState):
+        features = self.getFeatures(gameState, Directions.STOP)
+        value = features * self.weights
+        return value
+
+    def getMaxQValue(self, gameState):
         legal_actions = gameState.getLegalActions(self.index)
         if len(legal_actions) == 0:
             return 0.0
-        for action in legal_actions:
-            values.append(self.evaluate(gameState, action))
-        return max(values)
+        action_from_policy = self.getPolicy(gameState)
+        return self.getActionQValue(gameState, action_from_policy)
 
     def getPolicy(self, gameState):
         values_and_actions = dict()
         legal_actions = gameState.getLegalActions(self.index)
-        if len(legal_actions) == 0:
-            return None
+        legal_actions.remove(Directions.STOP)
+        reverse = Directions.REVERSE[gameState.getAgentState(self.index).configuration.direction]
+        if len(legal_actions) == 1:
+            return reverse
+        elif reverse in legal_actions:
+            legal_actions.remove(reverse)
         for action in legal_actions:
-            values_and_actions[self.evaluate(gameState, action)] = action
+            value = self.getActionQValue(gameState, action)
+            values_and_actions[value] = action
         max_value = max(values_and_actions.keys())
         return values_and_actions[max_value]
 
     def chooseAction(self, gameState):
-        start = time.time()
+        legal_actions = gameState.getLegalActions(self.index)
+        if not legal_actions:
+            return None
+
+        if training:
+            for action in legal_actions:
+                self.updateWeights(gameState, action)
+
+        action = None
         probability = util.flipCoin(self.epsilon)
         if probability:
-            if self.closeToRewards(gameState):
-                # Highest reward from monte carlo
-                action = self.monteCarloSimulation(gameState, self.depth, self.decay)
-            else:
-                # A* to find closest pellet
-                action = self.aStarClosestPellet(gameState)
+            action = random.choice(legal_actions)
+            # if self.closeToRewards(gameState):
+            #     # Highest reward from monte carlo
+            #     action = self.monteCarloSimulation(gameState, self.depth, self.decay)
+            # else:
+            #     action = random.choice(legal_actions)
         else:
             action = self.getPolicy(gameState)
-        if (time.time() - start) > 1.5:
-            print 'eval time for offensive agent %d: %.4f' % (
-                self.agent.index, time.time() - start)
         return action
 
     def getFeatures(self, gameState, action):
-        features = dict()
+        features = util.Counter()
         successor = self.getSuccessor(gameState, action)
-        current_position = successor.getAgentState(self.index).getPosition()
+        current_position = gameState.getAgentState(self.index).getPosition()
         current_position = (int(current_position[0]), int(current_position[1]))
+        next_position = successor.getAgentState(self.index).getPosition()
+        next_position = (int(next_position[0]), int(next_position[1]))
+        next_agent_state = successor.getAgentState(self.index)
 
         # Score of successor state
-        features['score'] = self.getScore(successor)
+        score = successor.getScore()
+        if not self.isRed:
+            score *= -1
+        features['score'] = score
+
+        if next_agent_state.isPacman:
+            features['onDefense'] = 0
+        else:
+            features['onDefense'] = 1
+        food = self.getFood(gameState)
+        if food[next_position[0]][next_position[1]]:
+            features['eatsFood'] = 1
+        else:
+            features['eatsFood'] = 0
 
         # Distance to the nearest food
         closest_food = self.closestFood(gameState)
-        features['closestFood'] = closest_food
+        if closest_food is not None:
+            features['closestFood'] = closest_food
 
         # Distance to the nearest capsule
         closest_capsule = self.closestCapsule(gameState)
         features['closestCapsule'] = closest_capsule
 
-        # Distance to the boundary
-        closest_boundary = sys.maxint
-        for boundary_position in self.boundary:
-            if boundary_position is not None and current_position is not None:
-                distance = self.getMazeDistance(current_position, boundary_position)
-                if distance < closest_boundary:
-                    closest_boundary = distance
-        features['closestBoundary'] = closest_boundary
+        # Distance One/Five Ghosts
+        features['distanceFiveGhostCount'] = 0
+        features['distanceOneGhostCount'] = 0
+        ghost_states = [gameState.getAgentState(opponent) for opponent in self.getOpponents(gameState)]
+        ghost_positions = [ghost.getPosition() for ghost in ghost_states if ghost.isPacman and ghost.getPosition() is not None]
+        for ghost_position in ghost_positions:
+            distance_to_ghost = self.getMazeDistance(next_position, ghost_position)
+            if distance_to_ghost <= 5:
+                features['distanceFiveGhostCount'] += 1
+            if distance_to_ghost <= 1:
+                features['distanceOneGhostCount'] += 1
 
-        # Distances to ghosts (closest estimation)
-        ghosts = self.opponentPositions(gameState)
-        min_ghost_position = sys.maxint
-        visible_ghosts = 0
-        for ghost_position in ghosts:
-            if ghost_position is not None:
-                visible_ghosts += 1
-                distance = self.getMazeDistance(current_position, ghost_position)
-                if distance < min_ghost_position:
-                    min_ghost_position = distance
-        if visible_ghosts == 0:
-            ghosts = []
-            distances = successor.getAgentDistances()
-            for index in self.getOpponents(successor):
-                ghosts.append(distances[index])
-            min_ghost_position = min(ghosts)
-        if min_ghost_position < 6:
-            min_ghost_position = 6
-        features['closestGhost'] = min_ghost_position
 
         # Distance to friendly agent
         teammate_index = None
-        team_indices = self.getTeam(successor)
+        team_indices = self.getTeam(gameState)
         for index in team_indices:
             if index != self.index:
                 teammate_index = index
-        # If not within 5, will be None
-        teammate_position = successor.getAgentPosition(teammate_index)
-        distance = None
+        teammate_position = gameState.getAgentPosition(teammate_index)
         if teammate_position is not None:
-            distance = self.getMazeDistance(current_position, teammate_position)
-        else:
-            distance = successor.getAgentDistances()[teammate_index]
-        features['teammateDistance'] = distance
+            features['teammateDistance'] = self.getMazeDistance(current_position, teammate_position)
 
         # Distance to the closest risky food
         closest_risky_food = sys.maxint
-        closest_risky_food_risk = 0
         self.risky_food = self.updateRiskyFoodGrid(gameState)
         for position_risk_score in self.risky_food:
             distance = self.getMazeDistance(current_position, position_risk_score[0])
             if distance < closest_risky_food:
                 closest_risky_food = distance
-                closest_risky_food_risk = position_risk_score[1]
-        features['closestRiskyFood'] = closest_risky_food
+                features['closestRiskyFood'] = closest_risky_food
 
         # Normalize feature values to be between [0, 1]
-        # feature_values = []
-        # corresponding_names = []
-        # for feature_name in features.keys():
-        #     feature_values.append(features[feature_name])
-        #     corresponding_names.append(feature_name)
-        #     print(feature_name)
-        # feature_values = np.array(feature_values)
-        # feature_values.reshape(1, -1)
-        # print(feature_values)
-        # normalized_feature_values = preprocessing.normalize(feature_values)
-        # for name, idx in enumerate(corresponding_names):
-        #     features[name] = normalized_feature_values[idx]
+        # features = self.normalize(features)
+        # features = util.Counter(features)
+        features.divideAll(30)
         return features
 
     def updateWeights(self, gameState, action):
         features = self.getFeatures(gameState, action)
         nextState = self.getSuccessor(gameState, action)
+        reward = self.getStateRewardValue(gameState, nextState)
 
-        # Reward function needs work
-        # Reward for surviving
-        reward = nextState.getScore() - gameState.getScore()
+        old_q_value = self.getActionQValue(gameState, action)
+        new_q_value = self.getMaxQValue(nextState)
+        weight_correction = reward + self.decay * (new_q_value - old_q_value)
         for feature in features:
-            weight_correction = reward + self.decay * self.getValue(nextState) - self.evaluate(gameState, action)
-            self.weights[feature] = self.weights[feature] + self.alpha * weight_correction * features[feature]
+            new_weight = self.weights[feature] + self.alpha * weight_correction * features[feature]
+            self.weights[feature] = new_weight
+
+    def getStateRewardValue(self, gameState, nextState):
+        reward = 0
+        current_position = gameState.getAgentPosition(self.index)
+        next_position = nextState.getAgentState(self.index).getPosition()
+
+        opponents = [gameState.getAgentState(enemy) for enemy in self.getOpponents(gameState)]
+        non_hidden_opponents = [opponent for opponent in opponents if
+                                opponent.getPosition() is not None and not opponent.isPacman]
+        if len(non_hidden_opponents) != 0:
+            closest_opponent = min(
+                [self.getMazeDistance(current_position, opponent.getPosition()) for opponent in non_hidden_opponents])
+
+            # Decrease reward if Pacman gets eaten in nextState
+            if closest_opponent <= 1 and next_position == self.start:
+                reward -= 15
+
+            # Increase reward if Pacman gets a risky food and can make it out of the tunnel
+            for position_risk_score in self.risky_food:
+                # Our next position has a risky food
+                if next_position == position_risk_score[0]:
+                    # We need to check if the risk score is lower than the closest pacman + 1
+                    risk_of_grabbing_food = position_risk_score[1] + 1
+                    if risk_of_grabbing_food < closest_opponent:
+                        reward += 2.5
+
+        return reward
 
     def final(self, gameState):
         action = game.Directions.STOP
-        self.updateWeights(gameState, action)
+        if training:
+            self.updateWeights(gameState, action)
         json_object = json.dumps(self.weights, indent=4)
+        print("Offense Final")
         with open("./offense_weights.json", "w") as outfile:
             outfile.write(json_object)
 
     # Helper Functions -------------------------------------------------------------------------
+
+    def normalize(self, d):
+        lower = -1
+        higher = 1
+        return {key: lower + (higher - lower) * value for key, value in d.iteritems() if value is not None}
 
     def isBlue(self):
         return not self.isRed
@@ -383,13 +418,13 @@ class OffensiveAgent(CaptureAgent):
         for position in corners:
             legal_actions = self.getLegalActionsFromPosition(position, gameState)
             risk_score = 1
-            found_exit = False;
+            found_exit = False
             new_posn = position
             path_positions = dict()
             while not found_exit:
                 legal_actions.remove(game.Directions.STOP)
                 if len(legal_actions) > 1:
-                    break;
+                    break
                 if legal_actions[0] == game.Directions.WEST:
                     new_posn = (new_posn[0] - 1, new_posn[1])
                 elif legal_actions[0] == game.Directions.EAST:
@@ -430,6 +465,7 @@ class OffensiveAgent(CaptureAgent):
 
     def updateRiskyFoodGrid(self, gameState):
         new_risky_food = []
+
         for position_risk_score in self.risky_food:
             position = position_risk_score[0]
             if self.isBlue():
@@ -472,15 +508,16 @@ class OffensiveAgent(CaptureAgent):
         current_position = self.getPosition(gameState)
         pellet_count = 0
         possible_positions = self.closePositions(gameState, current_position, 5, set())
-        food = None
-        if self.isRed:
-            food = gameState.getBlueFood()
-        else:
-            food = gameState.getBlueFood()
+
+        food = self.getFood(gameState)
+        # if self.isRed:
+        #     food = gameState.getBlueFood()
+        # else:
+        #     food = gameState.getBlueFood()
         for position in possible_positions:
             if food[int(position[0])][int(position[1])]:
                 pellet_count += 1
-        return pellet_count >= 2
+        return pellet_count >= 1
 
     def montePossibleActions(self, state):
         """
@@ -488,13 +525,33 @@ class OffensiveAgent(CaptureAgent):
         """
         legal_actions = state.getLegalActions(self.index)
         legal_actions.remove(Directions.STOP)
-        if len(legal_actions == 1):
-            return legal_actions[0]
+        if len(legal_actions) == 1:
+            return [legal_actions[0]]
         else:
             reverse_direction = Directions.REVERSE[state.getAgentState(self.index).configuration.direction]
             if reverse_direction in legal_actions:
                 legal_actions.remove(reverse_direction)
             return legal_actions
+
+    def monteCarloScore(self, gameState, depth, decay):
+        """
+        Performs a Monte Carlo simulation on the given depth and returns the score maximizing aciton
+        """
+        copy = gameState.deepCopy()
+        if depth == 0:
+            new_actions = self.montePossibleActions(copy)
+            new_action = random.choice(new_actions)
+            next_state = copy.generateSuccessor(self.index, new_action)
+            return int(self.getActionQValue(next_state, Directions.STOP))
+
+        results = []
+        new_actions = self.montePossibleActions(copy)
+        for action in new_actions:
+            new_state = copy.generateSuccessor(self.index, action)
+            score = self.getActionQValue(new_state, Directions.STOP) + decay * self.monteCarloScore(new_state,
+                                                                                                    depth - 1, decay)
+            results.append(score)
+        return int(max(results))
 
     def monteCarloSimulation(self, gameState, depth, decay):
         """
@@ -505,125 +562,74 @@ class OffensiveAgent(CaptureAgent):
             new_actions = self.montePossibleActions(copy)
             new_action = random.choice(new_actions)
             next_state = copy.generateSuccessor(self.index, new_action)
-            return self.evaluate(next_state, Directions.STOP)
+            return self.getActionQValue(next_state, Directions.STOP)
 
         results = []
         actions = dict()
         new_actions = self.montePossibleActions(copy)
         for action in new_actions:
             new_state = copy.generateSuccessor(self.index, action)
-            score = self.evaluate(new_state, Directions.STOP) + decay * self.monteCarloSimulation(new_state, depth - 1,
-                                                                                                  decay)
+            score = self.getActionQValue(new_state, Directions.STOP) + decay * self.monteCarloScore(new_state,
+                                                                                                    depth - 1, decay)
             results.append(score)
             actions[score] = action
         return actions[max(results)]
 
-    def aStarClosestPellet(self, gameState):
-        from util import PriorityQueue
-        priority_queue = PriorityQueue()
-        priority_queue.push((self.getPosition(gameState), []), 0)
-        visited = set()
-
-        while not priority_queue.isEmpty():
-            coords, path = priority_queue.pop()
-            coords = (int(coords[0]), int(coords[1]))
-            if coords in visited:
-                continue
-            if coords[0] < 1 or coords[0] >= self.width or coords[1] < 1 or coords[1] >= self.height:
-                continue
-            visited.add(coords)
-            if self.isRed:
-                if gameState.getBlueFood()[int(coords[0])][int(coords[1])]:
-                    return path[0]
-            elif gameState.getRedFood()[int(coords[0])][int(coords[1])]:
-                return path[0]
-            legal_actions = self.getLegalActionsFromPosition(coords, gameState)
-            legal_actions.remove(game.Directions.STOP)
-            if len(legal_actions) == 0:
-                continue
-            for action in legal_actions:
-                if action == game.Directions.WEST:
-                    new_posn = (coords[0] - 1, coords[1])
-                    path.append(game.Directions.WEST)
-                    longer_path = path
-                    priority_queue.push((new_posn, longer_path), 0)
-                elif action == game.Directions.EAST:
-                    new_posn = (coords[0] + 1, coords[1])
-                    path.append(game.Directions.EAST)
-                    longer_path = path
-                    priority_queue.push((new_posn, longer_path), 0)
-
-                elif action == game.Directions.NORTH:
-                    new_posn = (coords[0], coords[1] + 1)
-                    path.append(game.Directions.NORTH)
-                    longer_path = path
-                    priority_queue.push((new_posn, longer_path), 0)
-
-                elif action == game.Directions.SOUTH:
-                    new_posn = (coords[0], coords[1] - 1)
-                    path.append(game.Directions.SOUTH)
-                    longer_path = path
-                    priority_queue.push((new_posn, longer_path), 0)
-
     def closestFood(self, gameState):
         closest_food = sys.maxint
+        not_sys_max_int = False
         food = self.getFood(gameState)
-        if not self.isRed:
-
-            start_column = 1
-            end_column = self.width // 2
-        else:
-            start_column = self.width // 2 + 1
-            end_column = self.width
         current_position = self.getPosition(gameState)
-        for x in range(start_column, end_column):
+
+        start = None
+        end = None
+        if self.isRed:
+            start = self.width // 2 + 1
+            end = self.width
+        else:
+            start = 1
+            end = self.width // 2
+
+        for x in range(start, end):
             for y in range(1, self.height):
                 if food[x][y]:
                     distance = self.getMazeDistance((x, y), current_position)
                     if distance < closest_food:
                         closest_food = distance
+                        not_sys_max_int = True
+        if not not_sys_max_int:
+            return None
         return closest_food
 
     def closestCapsule(self, gameState):
-        closest_capsule = sys.maxint
+        current_position = gameState.getAgentPosition(self.index)
         capsules = self.getCapsules(gameState)
-        if not self.isRed:
-
-            start_column = 1
-            end_column = self.width // 2
-        else:
-            start_column = self.width // 2 + 1
-            end_column = self.width
-        current_position = self.getPosition(gameState)
-        for x in range(start_column, end_column):
-            for y in range(1, self.height):
-                for pellet in capsules:
-                    if pellet == (x, y):
-                        distance = self.getMazeDistance((x, y), current_position)
-                        if distance < closest_capsule:
-                            closest_capsule = distance
-        return closest_capsule
+        if len(capsules) == 0 or capsules is None:
+            return None
+        return min([self.getMazeDistance(current_position, capsule) for capsule in capsules])
 
 
 class DefensiveAgent(CaptureAgent):
 
     def __init__(self, index):
         CaptureAgent.__init__(self, index)
+        self.start = None
         self.isRed = None
         self.risky_food = []
         self.riskyPositions = []
         self.width = None
         self.height = None
         self.boundary = []
-        self.epsilon = 0.1
+        self.epsilon = 0.05
         self.alpha = 0.2
-        self.decay = 0.9
+        self.decay = 0.8
         weights = {}
         with open("./defense_weights.json", 'r') as openfile:
             weights = json.load(openfile)
         self.weights = weights
 
     def registerInitialState(self, gameState):
+        self.start = gameState.getAgentPosition(self.index)
         self.width = gameState.data.layout.width
         self.height = gameState.data.layout.height
 
@@ -645,120 +651,167 @@ class DefensiveAgent(CaptureAgent):
         CaptureAgent.registerInitialState(self, gameState)
 
     def getSuccessor(self, gameState, action):
-        new_action = action
-        if action is None:
-            new_action = game.Directions.STOP
-        successor = gameState.generateSuccessor(self.index, new_action)
+        successor = gameState.generateSuccessor(self.index, action)
         pos = successor.getAgentState(self.index).getPosition()
-        pos = (int(pos[0]), int(pos[1]))
         if pos != nearestPoint(pos):
             # Only half a grid position was covered
-            return successor.generateSuccessor(self.index, new_action)
+            return successor.generateSuccessor(self.index, action)
         else:
             return successor
 
     def chooseAction(self, gameState):
+        legal_actions = gameState.getLegalActions(self.index)
+        if not legal_actions:
+            return None
+
+        if training:
+            for action in legal_actions:
+                self.updateWeights(gameState, action)
+        action = None
+
         probability = util.flipCoin(self.epsilon)
         actions = gameState.getLegalActions(self.index)
         if probability:
-            return random.choice(actions)
+            action = random.choice(actions)
+        else:
+            action = self.getPolicy(gameState)
+        return action
 
-        pickActions = []
-        values = []
-        bestVal = -99999999
-        for action in actions:
-            val = self.evaluate(gameState, action)
-            values.append((val, action))
-            bestVal = max(bestVal, val)
-
-        for value in values:
-            if value[0] == bestVal:
-                pickActions.append(value[1])
-
-        return random.choice(pickActions)
-
-    def getValue(self, gameState):
-        values = []
+    def getPolicy(self, gameState):
+        values_and_actions = dict()
         legal_actions = gameState.getLegalActions(self.index)
-        legal_actions.remove(game.Directions.STOP)
+        legal_actions.remove(Directions.STOP)
+        reverse = Directions.REVERSE[gameState.getAgentState(self.index).configuration.direction]
+        if len(legal_actions) == 1:
+            return reverse
+        elif reverse in legal_actions:
+            legal_actions.remove(reverse)
+        for action in legal_actions:
+            value = self.getActionQValue(gameState, action)
+            values_and_actions[value] = action
+        max_value = max(values_and_actions.keys())
+        return values_and_actions[max_value]
+
+    def getMaxQValue(self, gameState):
+        legal_actions = gameState.getLegalActions(self.index)
         if len(legal_actions) == 0:
             return 0.0
-        for action in legal_actions:
-            values.append(self.evaluate(gameState, action))
-        return max(values)
+        action_from_policy = self.getPolicy(gameState)
+        return self.getActionQValue(gameState, action_from_policy)
 
-    def evaluate(self, gameState, action):
-        score = 0
+    def getQValue(self, gameState):
+        features = self.getFeatures(gameState, Directions.STOP)
+        value = features * self.weights
+        return value
+
+    def getActionQValue(self, gameState, action):
         features = self.getFeatures(gameState, action)
-        for idx, feature in enumerate(features.keys()):
-            score += features[feature] * self.weights[feature]
-        return score
+        value = features * self.weights
+        print("defense: ", value)
+        return value
 
     def getFeatures(self, gameState, action):
         features = util.Counter()
         successor = self.getSuccessor(gameState, action)
-        cur = successor.getAgentState(self.index).getPosition()
-        cur = (int(cur[0]), int(cur[1]))
+        current_position = gameState.getAgentState(self.index).getPosition()
+        current_position = (int(current_position[0]), int(current_position[1]))
 
-        features['score'] = self.getScore(successor)
+        their_food_list = self.getFood(successor).asList()
+        our_food_list = self.getFoodYouAreDefending(successor).asList()
+        score = len(our_food_list) - len(their_food_list)
+        if not self.isRed:
+            score *= -1
+        features['score'] = score
 
+        # Distance to the closest boundary point
         closest_boundary = sys.maxint
         for boundary_position in self.boundary:
-            if boundary_position is not None:
-                distance = self.getMazeDistance(cur, boundary_position)
+            if boundary_position is not None and current_position is not None:
+                distance = self.getMazeDistance(current_position, boundary_position)
                 if distance < closest_boundary:
                     closest_boundary = distance
+                    features['closestBoundary'] = closest_boundary
 
-        features['closestBoundary'] = closest_boundary
-
-        pacCount = 0
+        # Number of enemies in Pacman mode
+        pac_count = 0
         for opponent in self.getOpponents(successor):
             agent_state = successor.getAgentState(opponent)
             if agent_state.isPacman:
-                pacCount += 1
+                pac_count += 1
+        features['pacCount'] = pac_count
 
-        features['pacCount'] = pacCount
-
+        # NEED TO UPDATE RISKY DEFENDING FOOD
         self.findRiskyDefendingFood(successor)
         features['riskyFoodCount'] = len(self.risky_food)
 
-        riskScore = 0
-        nearbyTiles = self.BFSVisited(successor, cur, set(cur), 3)
-        for pos in nearbyTiles:
+        # Sum of close risky positions' risk scores
+        risk_score = 0
+        nearby_tiles = self.BFSVisited(successor, current_position, set(current_position), 3)
+        for pos in nearby_tiles:
             if pos in self.risky_food:
-                riskScore += self.riskyPositions[pos]
+                risk_score += self.riskyPositions[pos]
 
-        features['riskScore'] = riskScore / len(nearbyTiles)
+        features['riskScore'] = risk_score / len(nearby_tiles)
 
-        # feature_values = []
-        # corresponding_names = []
-        # for feature_name in features.keys():
-        #     feature_values.append(features[feature_name])
-        #     corresponding_names.append(feature_name)
-        # feature_values = np.array(feature_values)
-        # feature_values.reshape(1, -1)
-        # normalized_feature_values = preprocessing.normalize(feature_values)
-        # for name, idx in enumerate(corresponding_names):
-        #     features[name] = normalized_feature_values[idx]
+        # Normalize feature values to be between [0, 1]
+        # features = self.normalize(features)
+        # features = util.Counter(features)
+        features.divideAll(10)
         return features
 
     def updateWeights(self, gameState, action):
         features = self.getFeatures(gameState, action)
         nextState = self.getSuccessor(gameState, action)
+        reward = self.getStateRewardValue(gameState, nextState)
 
-        reward = nextState.getScore() - gameState.getScore()
+        old_q_value = self.getActionQValue(gameState, action)
+        new_q_value = self.getMaxQValue(nextState)
+        weight_correction = reward + self.decay * (new_q_value - old_q_value)
         for feature in features:
-            weight_correction = reward + self.decay * self.getValue(nextState) - self.evaluate(gameState, action)
-            self.weights[feature] = self.weights[feature] + self.alpha * weight_correction * features[feature]
+            new_weight = self.weights[feature] + self.alpha * weight_correction * features[feature]
+            self.weights[feature] = new_weight
+
+    def getStateRewardValue(self, gameState, nextState):
+        reward = 0
+        current_position = gameState.getAgentPosition(self.index)
+        next_position = nextState.getAgentState(self.index).getPosition()
+
+        opponents = [gameState.getAgentState(enemy) for enemy in self.getOpponents(gameState)]
+        non_hidden_opponents = [opponent for opponent in opponents if
+                                opponent.getPosition() is not None and opponent.isPacman]
+        if len(non_hidden_opponents) != 0:
+            closest_opponent = min(
+                [self.getMazeDistance(current_position, opponent.getPosition()) for opponent in non_hidden_opponents])
+
+            # Increase reward if you eat someone
+            opponents_next = [nextState.getAgentState(i) for i in self.getOpponents(nextState)]
+            opponent_pacmans_next = [opponent for opponent in opponents_next if opponent.isPacman and opponent.getPosition() is not None]
+            if len(opponent_pacmans_next) == len(non_hidden_opponents) - 1:
+                reward += 3
+
+            # Decrease reward if you get eaten by enemy
+            scared_timer = gameState.getAgentState(self.index).scaredTimer
+            if scared_timer > 0:
+                if closest_opponent <= 1 and next_position == self.start:
+                    reward -= 1.5
+
+        return reward
 
     def final(self, gameState):
         action = game.Directions.STOP
-        self.updateWeights(gameState, action)
+        if training:
+            self.updateWeights(gameState, action)
         json_object = json.dumps(self.weights, indent=4)
+        print("Defense Final")
         with open("./defense_weights.json", "w") as outfile:
             outfile.write(json_object)
 
     ################################### HELPERS ###################################
+
+    def normalize(self, d):
+        lower = -1
+        higher = 1
+        return {key: lower + (higher - lower) * value for key, value in d.iteritems() if value is not None}
 
     def getPosition(self, gameState):
         return gameState.getAgentState(self.index).getPosition()
@@ -898,190 +951,3 @@ class DefensiveAgent(CaptureAgent):
                 visited.update(nextBFS)
                 return visited
             return visited
-
-    """
-    def pacTuple(self, gameState):
-        agentPos = self.getPosition(gameState)
-        pacPos = self.findClosestPac(gameState)[0]
-        dist = self.getMazeDistance(agentPos, pacPos)
-        return (agentPos, pacPos, dist)
-    def bestFoodDefense(self, gameState):
-        foodRisk = self.findRiskyDefendingFood(gameState)
-        riskyPos = self.riskyPositions
-        aggregateFoodRisk = util.Counter()
-        if self.isRed:
-            start_column = 0
-        else:
-            start_column = gameState.data.layout.width
-        for x in range(start_column + 2, start_column + gameState.data.layout.width - 2):
-            for y in range(2, gameState.data.layout.height - 2):
-                avgRisk = 0
-                for i in range(x - 2, x + 2):
-                    for j in range(y - 2, y + 2):
-                        if foodRisk[(i, j)] != None:
-                            risk = riskyPos[(x, y)] / 25
-                            if (i, j) in self.getCapsules(gameState):
-                                risk = risk * 2
-                            avgRisk += risk
-                aggregateFoodRisk[(x, y)] = avgRisk
-        bestPos = None
-        bestRisk = -99999999
-        for pos in aggregateFoodRisk.keys():
-            if aggregateFoodRisk[pos] > bestRisk:
-                bestRisk = aggregateFoodRisk[pos]
-                bestPos = pos
-        self.foodDefensePos = bestPos
-        return bestPos
-    def updateFood(self, gameState):
-        food = None
-        if self.isRed:
-            food = gameState.getRedFood()
-        else:
-            food = gameState.getBlueFood()
-        if len(food) < len(self.oldFood):
-            for oldF in self.oldFood:
-                if oldF not in food:
-                    self.lastEatenFood = oldF
-            self.oldFood = food
-    def estimateClosestPac(self, gameState):
-        pos = self.lastEatenFood
-        if pos == None or self.getMazeDistance(pos, gameState.getAgentState(self.index)) < 3:
-            return self.bestFoodDefense(gameState)
-        return pos
-    def findClosestPac(self, gameState):
-        pos = None
-        closest = 99999999
-        opponents = [gameState.getAgentState(i) for i in self.getOpponents(gameState)]
-        opponentPos = [gameState.getAgentPosition(j) for j in self.getOpponents(gameState)]
-        for k in range(len(opponents)):
-            if opponents[k] != None:
-                dist = self.getMazeDistance(self.getPosition(gameState), opponentPos[k])
-                if dist < closest and opponents[k].isPacman:
-                    pos = opponentPos[k]
-                    closest = dist
-        if pos == None:
-            pos = self.estimateClosestPac(gameState)
-        self.closestPacPos = pos
-        return pos
-    def pacRisk(self, gameState):
-        nearestPac = self.pacTuple(gameState)
-        risk = self.riskyPositions
-        ourRisk = risk[nearestPac[0]]
-        if nearestPac[2] < ourRisk + self.runAway:  # TODO: this val may need to be altered depending on performance...
-            return True
-        return False
-    def ghostRisk(self, gameState):
-        opponents = [gameState.getAgentState(i) for i in self.getOpponents(gameState)]
-        opponentPos = [gameState.getAgentPosition(j) for j in self.getOpponents(gameState)]
-        closest = 99999999
-        risk = self.riskyPositions
-        ourRisk = risk[self.getAgentPosition(self.index)]
-        for k in range(len(opponents)):
-            if opponents[k] != None:
-                dist = self.getMazeDistance(self.getPosition(gameState), opponentPos[k])
-                if dist < closest and not opponents[k].isPacman:
-                    closest = dist
-        if closest != 99999999 and closest < ourRisk + self.runAway:
-            return True
-        return False
-    def atRiskOfDeath(self, gameState):
-        agentState = gameState.getAgentState(self.index)
-        if agentState.isPacman and self.ghostRisk(gameState):
-            return True
-        elif agentState.scaredTimer > 0 and self.pacRisk(gameState):
-            return True
-        else:
-            return False
-    def defendFood(self, gameState):
-        return self.evaluate(gameState, Directions.STOP) > 0  # TODO: see how this works with our Q-learning
-    def runAway(self, gameState):
-        nearestPac = self.pacTuple(gameState)
-        actions = self.getLegalActions(self.index)
-        actions.remove(Directions.STOP)
-        bestDist = nearestPac[2]
-        bestAction = Directions.STOP
-        for action in actions:
-            nextState = gameState.generateSuccessor(self.index, action)
-            nextPos = nextState.getAgentPosition(self.index)
-            newDist = self.getMazeDistance(nextPos, nearestPac[1])
-            if newDist > bestDist:
-                bestDist = newDist
-                bestAction = action
-        return bestAction
-    def guard(self, gameState):
-        start = gameState.getAgentPosition(self.index)
-        nearestPac = self.pacTuple(gameState)
-        visitable = self.BFSVisited(gameState, start, {start}, self.guardDepth)
-        bestDist = 99999999
-        bestPos = None
-        for pos in visitable:
-            dist = self.getMazeDistance(pos, nearestPac[1])
-            if range < self.guardDepth and bestDist > dist:
-                bestDist = dist
-                bestPos = pos
-        return self.goTo(bestPos)
-    def BFSVisited(self, gameState, cur, visited, depth):
-        if depth == 0:
-            return visited
-        legal = self.getLegalActionsFromPosition(cur, gameState)
-        for action in legal:
-            next = self.getSuccessor(gameState, action)
-            nextPos = next.getAgentState(self.index).getPosition()
-            if nextPos not in visited:
-                visited.add(nextPos)
-                return visited.update(self.BFSVisited(next, nextPos, visited, depth - 1))
-    def getCorrectAction(tree, start):
-        nextPos = tree[start]
-        if nextPos[0] - 1 == start[0]:
-            return Directions.EAST
-        elif nextPos[0] + 1 == start[0]:
-            return Directions.WEST
-        elif nextPos[1] - 1 == start[1]:
-            return Directions.NORTH
-        elif nextPos[1] + 1 == start[1]:
-            return Directions.SOUTH
-        return Directions.STOP
-    def goTo(self, gameState, target):
-        start = gameState.getAgentPosition(self.index)
-        queue = util.Queue()
-        queue.push(start)
-        visited = [start]
-        path = {start: start}
-        while not queue.isEmpty():
-            cur = queue.pop()
-            if cur == target:
-                return self.getCorrectAction(path, start)
-            else:
-                for action in self.getLegalActionsFromPosition(cur):
-                    next = cur
-                    if action == Directions.NORTH:
-                        next = (cur[0], cur[1] + 1)
-                    elif action == Directions.SOUTH:
-                        next = (cur[0], cur[1] - 1)
-                    elif action == Directions.EAST:
-                        next = (cur[0] + 1, cur[1])
-                    elif action == Directions.WEST:
-                        next = (cur[0] - 1, cur[1])
-                    if next not in visited:
-                        queue.push(next)
-                        visited.append(next)
-                        path[cur] = next
-        return Directions.STOP
-    def targetPac(self, gameState, target):
-        return self.goTo(gameState, target)
-    def zoneDefense(self, gameState, center):
-        agentPos = self.getAgentPosition(self.index)
-        if self.getMazeDistance(agentPos, center) > self.guardDepth:
-            return self.goTo(gameState, center)
-        return self.guard(gameState)
-    def chooseAction(self, gameState):
-        self.updateFood(gameState)
-        if self.atRiskOfDeath(gameState):
-            return self.runAway(gameState)
-        elif self.defendFood(gameState):
-            center = self.bestFoodDefense()
-            return self.zoneDefense(gameState, center)
-        else:
-            target = self.closestPacPos
-            return self.targetPac(gameState, target)
-    """
