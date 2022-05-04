@@ -638,6 +638,7 @@ class DefensiveFeaturesExtractor:
 
     def getFeatures(self, state, action):
         features = util.Counter()
+
         successor = self.agent.getSuccessor(state, action)
 
         myState = successor.getAgentState(self.agent.index)

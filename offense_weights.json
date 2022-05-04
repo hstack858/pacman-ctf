@@ -1,11 +1,10 @@
 {
-    "closestFood": -9.718462461348116, 
-    "distanceOneGhostCount": -19.979807486341777, 
-    "closestCapsule": -2.61293140186069, 
-    "score": 10.0, 
-    "teammateDistance": 10.355511541308795, 
-    "eatsFood": 9.989348128861046, 
-    "distanceFiveGhostCount": -3.98165266300368, 
-    "onDefense": -18, 
-    "closestRiskyFood": -4.6573828748032025
+    "closestFood": -2.528, 
+    "score": -0.2489, 
+    "distanceOneGhostCount": -21.342, 
+    "closestCapsule": -2.14, 
+    "bias": -8.0709, 
+    "teammateDistance": 0, 
+    "eatsFood": 10.27, 
+    "onDefense": -18.22
 }
