@@ -389,7 +389,7 @@ class OffensiveAgent(DummyAgent):
         # Distance One Ghosts (Could be eaten!)
         ghost_states = [gameState.getAgentState(opponent) for opponent in self.getOpponents(gameState)]
         ghost_positions = [ghost.getPosition() for ghost in ghost_states if
-                           not ghost.isPacman and ghost.getPosition() is not None]
+                           not ghost.isPacman and ghost.getPosition() is not None and (ghost.scaredTimer < 3)]
         for ghost_position in ghost_positions:
             distance_to_ghost = self.getMazeDistance(next_position, ghost_position)
             if distance_to_ghost <= 1:
