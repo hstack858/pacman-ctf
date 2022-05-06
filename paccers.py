@@ -32,24 +32,14 @@ from util import nearestPoint
 # Team creation #
 #################
 training = False
-
+arguments = {}
 
 def createTeam(firstIndex, secondIndex, isRed,
-               first='OffensiveAgent', second='DefensiveAgent'):
-    """
-  This function should return a list of two agents that will form the
-  team, initialized using firstIndex and secondIndex as their agent
-  index numbers.  isRed is True if the red team is being created, and
-  will be False if the blue team is being created.
-
-  As a potentially helpful development aid, this function can take
-  additional string-valued keyword arguments ("first" and "second" are
-  such arguments in the case of this function), which will come from
-  the --redOpts and --blueOpts command-line arguments to capture.py.
-  For the nightly contest, however, your team will be created without
-  any extra arguments, so you should make sure that the default
-  behavior is what you want for the nightly contest.
-  """
+               first='OffensiveAgent', second='DefensiveAgent', **args):
+    if 'numTraining' in args:
+        arguments['numTraining'] = args['numTraining']
+        global_vars = globals()
+        global_vars['training'] = True
     return [eval(first)(firstIndex), eval(second)(secondIndex)]
 
 
@@ -108,18 +98,6 @@ class DummyAgent(CaptureAgent):
             return successor.generateSuccessor(self.index, action)
         else:
             return successor
-
-    def updateWeights(self, gameState, action):
-        features = self.getFeatures(gameState, action)
-        nextState = self.getSuccessor(gameState, action)
-        reward = self.getStateRewardValue(gameState, nextState)
-
-        old_q_value = self.getActionQValue(gameState, action)
-        new_q_value = self.getMaxQValue(nextState)
-        weight_correction = reward + self.decay * (new_q_value - old_q_value)
-        for feature in features:
-            new_weight = self.weights[feature] + self.alpha * weight_correction * features[feature]
-            self.weights[feature] = new_weight
 
     def getPolicy(self, gameState):
         """
@@ -289,6 +267,18 @@ class OffensiveAgent(DummyAgent):
         self.risky_food = self.findRiskyAttackingFood(gameState)
         CaptureAgent.registerInitialState(self, gameState)
 
+    def updateWeights(self, gameState, action):
+        features = self.getFeatures(gameState, action)
+        nextState = self.getSuccessor(gameState, action)
+        reward = self.getStateRewardValue(gameState, nextState)
+
+        old_q_value = self.getActionQValue(gameState, action)
+        new_q_value = self.getMaxQValue(nextState)
+        weight_correction = reward + self.decay * (new_q_value - old_q_value)
+        for feature in features:
+            new_weight = self.weights[feature] + self.alpha * weight_correction * features[feature]
+            self.weights[feature] = new_weight
+
     def closestCapsule(self, gameState):
         current_position = gameState.getAgentPosition(self.index)
         capsules = self.getCapsules(gameState)
@@ -417,7 +407,7 @@ class OffensiveAgent(DummyAgent):
                     closest_risky_food = distance
                     features['closestRiskyFood'] = closest_risky_food
 
-        features.divideAll(10.0)
+        features.divideAll(30.0)
 
         return features
 
@@ -441,7 +431,7 @@ class OffensiveAgent(DummyAgent):
                 action = self.getPolicy(gameState)
             return action
 
-    def getRewardStateValue(self, gameState, nextState):
+    def getStateRewardValue(self, gameState, nextState):
         reward = 0
         current_position = gameState.getAgentPosition(self.index)
         next_position = nextState.getAgentState(self.index).getPosition()
@@ -567,6 +557,21 @@ class OffensiveAgent(DummyAgent):
         CaptureAgent.final(self, state)
         print("Final weights for offensive agent:")
         print(self.weights)
+        json_object = json.dumps(self.weights, indent=4)
+        with open("./offense_weights.json", "w") as outfile:
+            outfile.write(json_object)
+
+        # Save Scores
+        scores = []
+        with open("./scores.json", "r") as openfile:
+            scores = json.load(openfile)
+            score = self.getScore(state)
+            if self.isBlue():
+                score *= -1
+            scores.append(score)
+        with open("./scores.json", "w") as outfile:
+            json_object = json.dumps(scores, indent=4)
+            outfile.write(json_object)
 
 class DefensiveAgent(DummyAgent):
     """
@@ -612,47 +617,36 @@ class DefensiveAgent(DummyAgent):
         self.risky_food = self.findRiskyDefendingFood(gameState)
         CaptureAgent.registerInitialState(self, gameState)
 
-    def chooseAction(self, state):
-        """
-        Compute the action to take in the current state.  With
-        probability self.epsilon, we should take a random action and
-        take the best policy action otherwise.  Note that if there are
-        no legal actions, which is the case at the terminal state, you
-        should choose None as the action.
+    def updateWeights(self, gameState, action):
+        features = self.getFeatures(gameState, action)
+        nextState = self.getSuccessor(gameState, action)
+        reward = self.getStateRewardValue(gameState, nextState)
 
-        HINT: You might want to use util.flipCoin(prob)
-        HINT: To pick randomly from a list, use random.choice(list)
-      """
-        # Pick Action
-        legalActions = state.getLegalActions(self.index)
+        old_q_value = self.getActionQValue(gameState, action)
+        new_q_value = self.getMaxQValue(nextState)
+        weight_correction = reward + self.decay * (new_q_value - old_q_value)
+        for feature in features:
+            new_weight = self.weights[feature] + self.alpha * weight_correction * features[feature]
+            self.weights[feature] = new_weight
 
-        foodLeft = len(self.getFood(state).asList())
-
-        if foodLeft <= 2:
-            bestDist = 9999
-            for action in legalActions:
-                successor = self.getSuccessor(state, action)
-                pos2 = successor.getAgentPosition(self.index)
-                dist = self.getMazeDistance(self.start, pos2)
-                if dist < bestDist:
-                    bestAction = action
-                    bestDist = dist
-            return bestAction
-
-        action = None
-        if not legalActions:
-            return action
+    def chooseAction(self, gameState):
+        legal_actions = gameState.getLegalActions(self.index)
+        if not legal_actions:
+            return None
 
         if training:
-            for action in legalActions:
-                self.updateWeights(state, action)
+            for action in legal_actions:
+                self.updateWeights(gameState, action)
 
-        p = self.epsilon
-        if util.flipCoin(p):
-            action = random.choice(legalActions)
+        probability = util.flipCoin(self.epsilon)
+        if probability:
+            # if self.closeToRewards(gameState):
+            #     # Highest reward from monte carlo
+            #     action = self.monteCarloSimulation(gameState, self.depth, self.decay)
+            # else:
+            action = random.choice(legal_actions)
         else:
-            action = self.getPolicy(state)
-
+            action = self.getPolicy(gameState)
         return action
 
     def getStateRewardValue(self, gameState, nextState):
@@ -697,6 +691,7 @@ class DefensiveAgent(DummyAgent):
         next_position = next_agent_state.getPosition()
         next_position = (int(next_position[0]), int(next_position[1]))
 
+        features["bias"] = 1
 
         enemy_states = [successor.getAgentState(opponent) for opponent in self.getOpponents(successor)]
         pac_states = [enemy for enemy in enemy_states if enemy.isPacman and enemy.getPosition() is not None]
@@ -742,7 +737,7 @@ class DefensiveAgent(DummyAgent):
         if action == reverse:
             features['reverse'] = 1
 
-        features.divideAll(10.0)
+        features.divideAll(30.0)
         return features
 
         ################################### HELPERS ###################################
@@ -787,4 +782,7 @@ class DefensiveAgent(DummyAgent):
         CaptureAgent.final(self, state)
         print("Final weights for defensive agent:")
         print(self.weights)
+        json_object = json.dumps(self.weights, indent=4)
+        with open("./defense_weights.json", "w") as outfile:
+            outfile.write(json_object)
 

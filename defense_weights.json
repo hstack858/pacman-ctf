@@ -1,10 +1,11 @@
 {
-	"riskyFoodCount": 0,
-	"reverse":-2,
-	"closestPac": -100,
-	"stop": -100,
-	"closestBoundary": -5,
-	"riskScore": 0,
-	"pacCount": -50,
-	"middleBoundaryDistance": -5
+    "riskyFoodCount": 5, 
+    "reverse": -2, 
+    "middleBoundaryDistance": -5, 
+    "closestPac": -100, 
+    "stop": -100, 
+    "bias": 0, 
+    "closestBoundary": -5, 
+    "riskScore": 2.0, 
+    "pacCount": -50
 }
